@@ -1,0 +1,188 @@
+from uuid import UUID
+
+from fastapi import HTTPException
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
+from app.database.models.conversation import ChatMessage, Conversation
+
+
+class ConversationRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+def get_or_create(
+    self,
+    session_id: str,
+    patient_id: UUID,
+    owner_user_id: UUID,
+) -> Conversation:
+    statement = (
+        pg_insert(Conversation)
+        .values(
+            session_id=session_id,
+            patient_id=patient_id,
+            owner_user_id=owner_user_id,
+        )
+        .on_conflict_do_nothing(
+            index_elements=[Conversation.session_id],
+        )
+    )
+
+    self.db.execute(statement)
+
+    conversation = self.db.scalar(
+        select(Conversation)
+        .where(
+            Conversation.session_id == session_id,
+            Conversation.patient_id == patient_id,
+            Conversation.owner_user_id == owner_user_id,
+        )
+        .with_for_update()
+    )
+
+    if conversation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Conversation not found.",
+        )
+
+    return conversation
+
+    def add_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+    ) -> ChatMessage:
+        message = ChatMessage(
+            session_id=session_id,
+            role=role,
+            content=content,
+        )
+
+        self.db.add(message)
+        self.db.flush()
+
+        return message
+
+    def touch(self, session_id: str) -> None:
+        self.db.execute(
+            update(Conversation)
+            .where(Conversation.session_id == session_id)
+            .values(updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+
+    def get_recent_messages(
+        self,
+        session_id: str,
+        limit: int,
+    ) -> list[ChatMessage]:
+        statement = (
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(
+                ChatMessage.created_at.desc(),
+                ChatMessage.id.desc(),
+            )
+            .limit(limit)
+        )
+
+        messages = list(self.db.scalars(statement).all())
+        messages.reverse()
+        return messages
+
+    def list_patient_conversations(
+        self,
+        patient_id: UUID,
+        owner_user_id: UUID,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[Conversation, int]], int]:
+        message_count = (
+            select(func.count(ChatMessage.id))
+            .where(
+                ChatMessage.session_id == Conversation.session_id,
+                Conversation.patient_id == patient_id,
+                Conversation.owner_user_id == owner_user_id,
+            )
+            .correlate(Conversation)
+            .scalar_subquery()
+        )
+
+        statement = (
+            select(
+                Conversation,
+                message_count.label("message_count"),
+            )
+            .where(Conversation.patient_id == patient_id)
+            .order_by(
+                Conversation.updated_at.desc(),
+                Conversation.session_id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+
+        rows = self.db.execute(statement).all()
+
+        total = self.db.scalar(
+            select(func.count())
+            .select_from(Conversation)
+            .where(
+                Conversation.patient_id == patient_id,
+                Conversation.owner_user_id == owner_user_id,
+            )
+        ) or 0
+
+        return [(row[0], row[1]) for row in rows], total
+
+    def get_patient_conversation(
+        self,
+        patient_id: UUID,
+        session_id: str,
+        owner_user_id: UUID,
+    ) -> Conversation | None:
+        statement = select(Conversation).where(
+            Conversation.patient_id == patient_id,
+            Conversation.session_id == session_id,
+            Conversation.owner_user_id == owner_user_id,
+        )
+
+        return self.db.scalar(statement)
+
+    def list_messages(
+        self,
+        session_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[ChatMessage], int]:
+        statement = (
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(
+                ChatMessage.created_at,
+                ChatMessage.id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+
+        messages = list(self.db.scalars(statement).all())
+
+        total = self.db.scalar(
+            select(func.count())
+            .select_from(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+        ) or 0
+
+        return messages, total
+
+    def delete_conversation(
+        self,
+        conversation: Conversation,
+    ) -> None:
+        self.db.delete(conversation)
+        self.db.flush()

@@ -34,3 +34,31 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+
+# Streamlit Secrets
+.streamlit/secrets.toml
+
+# Archives
+app.zip
+*.zip
+
+# Local AI Model Files
+*.onnx
+*.onnx.json
+
+# Medical Documents
+medical_docs/
+
+# Local Test Data
+sepsis_test.txt
+
+# Database Files and Backups
+*.db
+*.sqlite3
+*.sql
+*.dump
+backups/
+
+# Additional Environment Files
+.env.*
+!.env.example
